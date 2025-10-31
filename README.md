@@ -1,2 +1,2 @@
-# vps_bash
-自用
+# vps_bash [AI Generated]
+自用 
