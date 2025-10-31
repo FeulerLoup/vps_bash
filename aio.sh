@@ -72,7 +72,13 @@ enable_bbr() {
 }
 
 install_fail2ban() {
-    bash <(curl -sSL "${GH_PROXY}/https://github.com/FeulerLoup/vps_bash/raw/refs/heads/main/install_fail2ban.sh")
+    read -p "请输入要保护的 SSH 端口 (默认 22): " port
+    port=${port:-22}
+    if ! [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 ]]; then
+        echo "端口无效，使用默认 22"
+        port=22
+    fi
+    curl -sSL "${GH_PROXY}/https://github.com/FeulerLoup/vps_bash/raw/refs/heads/main/install_fail2ban.sh" | bash -s -- -p "$port"
 }
 
 uninstall_aliyun_monitor() {
