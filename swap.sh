@@ -33,14 +33,53 @@ grep -q "swapfile" /etc/fstab
 #如果不存在将为其创建swap
 if [ $? -ne 0 ]; then
 	echo -e "${Green}swapfile未发现，正在为其创建swapfile${Font}"
+	
+	# 尝试使用 fallocate 创建 swap 文件
 	fallocate -l ${swapsize}M /swapfile
+	
+	# 检查 fallocate 是否成功
+	if [ $? -ne 0 ]; then
+		echo -e "${Red}fallocate 命令失败，尝试使用 dd 命令创建...${Font}"
+		# 使用 dd 命令作为备用方案
+		dd if=/dev/zero of=/swapfile bs=1M count=${swapsize}
+		
+		# 检查 dd 是否成功
+		if [ $? -ne 0 ]; then
+			echo -e "${Red}swap文件创建失败！${Font}"
+			exit 1
+		fi
+	fi
+	
+	# 检查文件是否创建成功且大小正确
+	if [ ! -f /swapfile ] || [ $(stat -c%s /swapfile) -lt 10240 ]; then
+		echo -e "${Red}swap文件创建失败或文件过小！${Font}"
+		rm -f /swapfile
+		exit 1
+	fi
+	
 	chmod 600 /swapfile
 	mkswap /swapfile
+	
+	# 检查 mkswap 是否成功
+	if [ $? -ne 0 ]; then
+		echo -e "${Red}mkswap 执行失败！${Font}"
+		rm -f /swapfile
+		exit 1
+	fi
+	
 	swapon /swapfile
+	
+	# 检查 swapon 是否成功
+	if [ $? -ne 0 ]; then
+		echo -e "${Red}swapon 执行失败！${Font}"
+		rm -f /swapfile
+		exit 1
+	fi
+	
 	echo '/swapfile none swap defaults 0 0' >> /etc/fstab
-         echo -e "${Green}swap创建成功，并查看信息：${Font}"
-         cat /proc/swaps
-         cat /proc/meminfo | grep Swap
+	echo -e "${Green}swap创建成功，并查看信息：${Font}"
+	cat /proc/swaps
+	cat /proc/meminfo | grep Swap
 else
 	echo -e "${Red}swapfile已存在，swap设置失败，请先运行脚本删除swap后重新设置！${Font}"
 fi
