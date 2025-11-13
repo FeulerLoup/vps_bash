@@ -47,13 +47,8 @@ add_swap() {
     bash <(curl -sSL "https://github.com/FeulerLoup/vps_bash/raw/refs/heads/main/swap.sh")
 }
 
-fusion_test() {
-    export noninteractive=true
-    curl -L "https://raw.githubusercontent.com/oneclickvirt/ecs/master/goecs.sh" -o goecs.sh
-    chmod +x goecs.sh
-    ./goecs.sh env
-    ./goecs.sh install
-    ./goecs.sh
+nodequality_test() {
+    bash <(curl -sL https://run.NodeQuality.com)
 }
 
 install_1panel() {
@@ -106,7 +101,7 @@ while true; do
     echo "========== VPS 管理菜单 =========="
     echo "1) 一键重装 Debian 12"
     echo "2) 增加交换内存"
-    echo "3) 融合测试"
+    echo "3) NodeQuality测试"
     echo "4) 安装 1Panel"
     echo "5) 安装 Docker"
     echo "6) 开启 BBR"
@@ -120,7 +115,7 @@ while true; do
     case $choice in
         1) install_debian12 ;;
         2) add_swap ;;
-        3) fusion_test ;;
+        3) nodequality_test ;;
         4) install_1panel ;;
         5) install_docker ;;
         6) enable_bbr ;;
