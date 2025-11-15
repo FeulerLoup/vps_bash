@@ -95,6 +95,79 @@ install_xrayr() {
     wget "https://raw.githubusercontent.com/Rakau/blockList/main/blockList" -O /etc/XrayR/rulelist
 }
 
+cleanup_journal_logs() {
+    echo "开始检查日志清理功能..."
+    
+    # 检查 journalctl 命令是否存在
+    if ! command -v journalctl &>/dev/null; then
+        echo "❌ 未找到 journalctl 命令，此系统可能未使用 systemd 日志管理"
+        echo "此功能仅适用于使用 systemd 的系统"
+        return 1
+    fi
+    
+    echo "✅ 检测到 journalctl 命令"
+    
+    # 显示当前日志占用空间
+    echo ""
+    echo "当前日志占用空间："
+    journalctl --disk-usage
+    
+    # 清理7天前的日志
+    echo ""
+    read -p "是否立即清理7天前的日志？(y/N): " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        echo "正在清理7天前的日志..."
+        journalctl --vacuum-time=7d
+        echo "✅ 日志清理完成"
+        echo ""
+        echo "清理后日志占用空间："
+        journalctl --disk-usage
+    else
+        echo "已跳过立即清理"
+    fi
+    
+    # 检查并添加定时任务
+    echo ""
+    echo "检查定时任务..."
+    
+    # 定时任务命令
+    CRON_CMD="journalctl --vacuum-time=7d"
+    CRON_JOB="0 0 * * 1 $CRON_CMD >/dev/null 2>&1"
+    
+    # 检查是否已存在相关定时任务
+    if crontab -l 2>/dev/null | grep -q "journalctl.*vacuum"; then
+        echo "✅ 已存在 journalctl 日志清理定时任务："
+        crontab -l 2>/dev/null | grep "journalctl.*vacuum"
+        echo ""
+        read -p "是否需要更新为每周一0点执行？(y/N): " update_confirm
+        if [[ "$update_confirm" =~ ^[Yy]$ ]]; then
+            # 删除旧的 journalctl vacuum 任务
+            crontab -l 2>/dev/null | grep -v "journalctl.*vacuum" | crontab -
+            # 添加新任务
+            (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+            echo "✅ 定时任务已更新为每周一0点执行"
+        else
+            echo "保持现有定时任务不变"
+        fi
+    else
+        echo "未找到相关定时任务"
+        read -p "是否添加每周一0点自动清理7天前日志的定时任务？(Y/n): " add_confirm
+        if [[ ! "$add_confirm" =~ ^[Nn]$ ]]; then
+            # 添加新的定时任务
+            (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+            echo "✅ 已添加定时任务：每周一0点自动清理7天前的日志"
+            echo "定时任务详情："
+            echo "$CRON_JOB"
+        else
+            echo "已取消添加定时任务"
+        fi
+    fi
+    
+    echo ""
+    echo "当前所有定时任务："
+    crontab -l 2>/dev/null || echo "无定时任务"
+}
+
 # 主菜单循环
 while true; do
     echo ""
@@ -109,6 +182,7 @@ while true; do
     echo "8) 卸载阿里云监控"
     echo "9) 卸载腾讯云监控"
     echo "10) 安装 XrayR"
+    echo "11) 清理系统日志"
     echo "0) 退出"
     echo "=================================="
     read -p "请输入选项数字: " choice
@@ -123,6 +197,7 @@ while true; do
         8) uninstall_aliyun_monitor ;;
         9) uninstall_qcloud_monitor ;;
         10) install_xrayr ;;
+        11) cleanup_journal_logs ;;
         0) exit 0 ;;
         *) echo "无效选项" ;;
     esac
