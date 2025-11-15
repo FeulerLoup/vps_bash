@@ -115,15 +115,16 @@ cleanup_journal_logs() {
     # 清理7天前的日志
     echo ""
     read -p "是否立即清理7天前的日志？(Y/n): " confirm
-    if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+    confirm=${confirm:-y}  # 默认值为 y
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        echo "已跳过立即清理"
+    else
         echo "正在清理7天前的日志..."
         journalctl --vacuum-time=7d
         echo "✅ 日志清理完成"
         echo ""
         echo "清理后日志占用空间："
         journalctl --disk-usage
-    else
-        echo "已跳过立即清理"
     fi
     
     # 检查并添加定时任务
@@ -140,26 +141,28 @@ cleanup_journal_logs() {
         crontab -l 2>/dev/null | grep "journalctl.*vacuum"
         echo ""
         read -p "是否需要更新为每周一0点执行？(Y/n): " update_confirm
-        if [[ ! "$update_confirm" =~ ^[Nn]$ ]]; then
+        update_confirm=${update_confirm:-y}  # 默认值为 y
+        if [[ "$update_confirm" =~ ^[Nn]$ ]]; then
+            echo "保持现有定时任务不变"
+        else
             # 删除旧的 journalctl vacuum 任务
             crontab -l 2>/dev/null | grep -v "journalctl.*vacuum" | crontab -
             # 添加新任务
             (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
             echo "✅ 定时任务已更新为每周一0点执行"
-        else
-            echo "保持现有定时任务不变"
         fi
     else
         echo "未找到相关定时任务"
         read -p "是否添加每周一0点自动清理7天前日志的定时任务？(Y/n): " add_confirm
-        if [[ ! "$add_confirm" =~ ^[Nn]$ ]]; then
+        add_confirm=${add_confirm:-y}  # 默认值为 y
+        if [[ "$add_confirm" =~ ^[Nn]$ ]]; then
+            echo "已取消添加定时任务"
+        else
             # 添加新的定时任务
             (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
             echo "✅ 已添加定时任务：每周一0点自动清理7天前的日志"
             echo "定时任务详情："
             echo "$CRON_JOB"
-        else
-            echo "已取消添加定时任务"
         fi
     fi
     
