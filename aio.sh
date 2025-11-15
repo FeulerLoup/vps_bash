@@ -114,8 +114,8 @@ cleanup_journal_logs() {
     
     # 清理7天前的日志
     echo ""
-    read -p "是否立即清理7天前的日志？(y/N): " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    read -p "是否立即清理7天前的日志？(Y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
         echo "正在清理7天前的日志..."
         journalctl --vacuum-time=7d
         echo "✅ 日志清理完成"
@@ -139,8 +139,8 @@ cleanup_journal_logs() {
         echo "✅ 已存在 journalctl 日志清理定时任务："
         crontab -l 2>/dev/null | grep "journalctl.*vacuum"
         echo ""
-        read -p "是否需要更新为每周一0点执行？(y/N): " update_confirm
-        if [[ "$update_confirm" =~ ^[Yy]$ ]]; then
+        read -p "是否需要更新为每周一0点执行？(Y/n): " update_confirm
+        if [[ ! "$update_confirm" =~ ^[Nn]$ ]]; then
             # 删除旧的 journalctl vacuum 任务
             crontab -l 2>/dev/null | grep -v "journalctl.*vacuum" | crontab -
             # 添加新任务
