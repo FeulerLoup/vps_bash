@@ -40,7 +40,7 @@ install_debian12() {
     fi
     wget --no-check-certificate -qO InstallNET.sh "https://raw.githubusercontent.com/leitbogioro/Tools/master/Linux_reinstall/InstallNET.sh" \
         && chmod a+x InstallNET.sh \
-        && bash InstallNET.sh -debian 12 -pwd "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
+        && bash InstallNET.sh -debian 12 --bbr -pwd "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
 }
 
 add_swap() {
