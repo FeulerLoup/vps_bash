@@ -38,9 +38,27 @@ install_debian12() {
         echo "已取消操作"
         return
     fi
-    wget --no-check-certificate -qO InstallNET.sh "https://raw.githubusercontent.com/leitbogioro/Tools/master/Linux_reinstall/InstallNET.sh" \
-        && chmod a+x InstallNET.sh \
-        && bash InstallNET.sh -debian 12 --bbr -pwd "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
+    
+    echo ""
+    echo "请选择下载源："
+    echo "1) gitee"
+    echo "2) github"
+    read -p "请输入选项 (1/2，默认2): " source_choice
+    source_choice=${source_choice:-2}
+    local url="https://raw.githubusercontent.com/leitbogioro/Tools/master/Linux_reinstall/InstallNET.sh"
+    local save_file="InstallNET.sh"
+    if [ "$source_choice" = "1" ]; then
+        url="https://gitee.com/mb9e8j2/Tools/raw/master/Linux_reinstall/InstallNET.sh"
+    fi
+
+    wget --no-check-certificate -qO "${save_file}" "${url}"
+    if [ ! -f "${save_file}" ]; then
+        echo "❌ 下载失败，请检查网络连接"
+        return 1
+    fi
+
+    chmod a+x "${save_file}"
+    bash "${save_file}" -debian 12 --bbr -pwd "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
 }
 
 add_swap() {
