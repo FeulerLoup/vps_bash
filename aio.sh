@@ -32,33 +32,85 @@ install_curl_if_missing
 
 # 函数定义
 install_debian12() {
-    echo "⚠️  一键重装 Debian 12 会清空系统数据！"
-    read -p "确认继续？输入 YES 才执行: " confirm
-    if [ "$confirm" != "YES" ]; then
-        echo "已取消操作"
-        return
-    fi
-    
     echo ""
-    echo "请选择下载源："
-    echo "1) gitee"
-    echo "2) github"
-    read -p "请输入选项 (1/2，默认2): " source_choice
-    source_choice=${source_choice:-2}
-    local url="https://raw.githubusercontent.com/leitbogioro/Tools/master/Linux_reinstall/InstallNET.sh"
-    local save_file="InstallNET.sh"
-    if [ "$source_choice" = "1" ]; then
-        url="https://gitee.com/mb9e8j2/Tools/raw/master/Linux_reinstall/InstallNET.sh"
+    echo "⚠️  警告：此操作将重装系统，所有数据将丢失！"
+    read -p "确认继续？(y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消"
+        return 0
     fi
 
-    wget --no-check-certificate -qO "${save_file}" "${url}"
-    if [ ! -f "${save_file}" ]; then
-        echo "❌ 下载失败，请检查网络连接"
-        return 1
+    # 确保 wget 已安装
+    if ! command -v wget &>/dev/null; then
+        echo "正在安装 wget..."
+        case $OS in
+            debian|ubuntu) apt-get update && apt-get install -y wget ;;
+            centos|rhel|rocky|almalinux) yum install -y wget ;;
+        esac
     fi
 
-    chmod a+x "${save_file}"
-    bash "${save_file}" -debian 12 --bbr -pwd "$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)"
+    # 生成随机密码并显示
+    local password=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+    echo ""
+    echo "=========================================="
+    echo "🔑 新系统 root 密码: $password"
+    echo "⚠️ 请务必保存此密码！重装后需要用它登录"
+    echo "=========================================="
+    echo ""
+
+    echo "请选择脚本源："
+    echo "1) leitbogioro"
+    echo "2) bin456789"
+    read -p "请输入选项 (1/2，默认1): " script_choice
+    script_choice=${script_choice:-1}
+
+    if [ "$script_choice" = "2" ]; then
+        echo ""
+        echo "请选择下载源："
+        echo "1) github"
+        echo "2) cnb.cool (国内)"
+        read -p "请输入选项 (1/2，默认1): " source_choice
+        source_choice=${source_choice:-1}
+
+        local url="https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh"
+        if [ "$source_choice" = "2" ]; then
+            url="https://cnb.cool/bin456789/reinstall/-/git/raw/main/reinstall.sh"
+        fi
+        local save_file="reinstall.sh"
+
+        rm -f "${save_file}"
+        wget --no-check-certificate -qO "${save_file}" "${url}"
+        if [ ! -s "${save_file}" ]; then
+            echo "❌ 下载失败，请检查网络连接"
+            return 1
+        fi
+
+        chmod a+x "${save_file}"
+        bash "${save_file}" debian 12 --password "$password"
+    else
+        echo ""
+        echo "请选择下载源："
+        echo "1) github"
+        echo "2) gitee (国内)"
+        read -p "请输入选项 (1/2，默认1): " source_choice
+        source_choice=${source_choice:-1}
+
+        local url="https://raw.githubusercontent.com/leitbogioro/Tools/master/Linux_reinstall/InstallNET.sh"
+        if [ "$source_choice" = "2" ]; then
+            url="https://gitee.com/mb9e8j2/Tools/raw/master/Linux_reinstall/InstallNET.sh"
+        fi
+        local save_file="InstallNET.sh"
+
+        rm -f "${save_file}"
+        wget --no-check-certificate -qO "${save_file}" "${url}"
+        if [ ! -s "${save_file}" ]; then
+            echo "❌ 下载失败，请检查网络连接"
+            return 1
+        fi
+
+        chmod a+x "${save_file}"
+        bash "${save_file}" -debian 12 --bbr -pwd "$password"
+    fi
 }
 
 add_swap() {
