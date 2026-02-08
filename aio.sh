@@ -241,6 +241,10 @@ cleanup_journal_logs() {
     crontab -l 2>/dev/null || echo "无定时任务"
 }
 
+night_traffic() {
+    bash <(curl -sSL "https://github.com/FeulerLoup/vps_bash/raw/refs/heads/main/night_traffic.sh")
+}
+
 # 主菜单循环
 while true; do
     echo ""
@@ -256,6 +260,7 @@ while true; do
     echo "9) 卸载腾讯云监控"
     echo "10) 安装 XrayR"
     echo "11) 清理系统日志"
+    echo "12) 定时跑下行流量"
     echo "0) 退出"
     echo "=================================="
     read -p "请输入选项数字: " choice
@@ -271,6 +276,7 @@ while true; do
         9) uninstall_qcloud_monitor ;;
         10) install_xrayr ;;
         11) cleanup_journal_logs ;;
+        12) night_traffic ;;
         0) exit 0 ;;
         *) echo "无效选项" ;;
     esac
