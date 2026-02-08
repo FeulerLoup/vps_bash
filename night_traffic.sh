@@ -42,21 +42,21 @@ LOG_FILE="/var/log/night_download.log"
 
 touch "$LOG_FILE"
 
-echo "[\$(date)] night download started" >> "\$LOG_FILE"
+echo "[$(date)] night download started" >> "$LOG_FILE"
 
 while true; do
-    URL=\${URLS[\$RANDOM % \${#URLS[@]}]}
+    URL=${URLS[$RANDOM % ${#URLS[@]}]}
 
-    echo "[\$(date)] downloading \$URL" >> "\$LOG_FILE"
+    echo "[$(date)] downloading $URL" >> "$LOG_FILE"
 
     wget \
-        --limit-rate=\$LIMIT_RATE \
+        --limit-rate=$LIMIT_RATE \
         --timeout=15 \
         --tries=3 \
         -O /dev/null \
-        "\$URL" >> "\$LOG_FILE" 2>&1
+        "$URL" >> "$LOG_FILE" 2>&1
 
-    sleep \$((RANDOM % 8 + 3))
+    sleep $((RANDOM % 8 + 3))
 done
 SCRIPT_EOF
 
