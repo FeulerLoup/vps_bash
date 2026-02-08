@@ -85,7 +85,7 @@ run() {
             --timeout=15 \
             --tries=3 \
             -O /dev/null \
-            "$URL" >> "$LOG_FILE" 2>&1
+            "$URL" >/dev/null 2>&1
 
         sleep $((RANDOM % 8 + 3))
     done
