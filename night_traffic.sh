@@ -31,8 +31,12 @@ LOG_FILE="/var/log/night_download.log"
 LIMIT_RATE="5m"
 
 URLS=(
-  "https://sin-speed.hetzner.com/10GB.bin"
-  "https://sgp.proof.ovh.net/files/10Gb.dat"
+  "https://sin-speed.hetzner.com/100MB.bin"
+  "https://ash-speed.hetzner.com/100MB.bin"
+  "https://fsn1-speed.hetzner.com/100MB.bin"
+  "https://nbg1-speed.hetzner.com/100MB.bin"
+  "https://hel1-speed.hetzner.com/100MB.bin"
+  "https://hil-speed.hetzner.com/100MB.bin"
   "https://dlied4.myapp.com/myapp/1104466820/cos.release-40109/10040714_com.tencent.tmgp.sgame_a2480356_8.2.1.9_F0BvnI.apk"
 )
 
