@@ -65,29 +65,43 @@ setup_swap() {
         return 1
     fi
 
-    if ! fallocate -l "${swapsize}M" /swapfile; then
-        echo -e "fallocate 命令失败，尝试使用 dd 命令创建..."
-        if ! dd if=/dev/zero of=/swapfile bs=1M count="${swapsize}"; then
-            echo -e "swapfile创建失败"
-            return 1
+    local swap_ok=false
+    for method in fallocate dd; do
+        rm -f /swapfile
+        if [ "$method" = "fallocate" ]; then
+            if ! fallocate -l "${swapsize}M" /swapfile 2>/dev/null; then
+                echo -e "fallocate 不可用，尝试 dd..."
+                continue
+            fi
+        else
+            echo -e "使用 dd 创建 swapfile..."
+            if ! dd if=/dev/zero of=/swapfile bs=1M count="${swapsize}" status=progress 2>&1; then
+                echo -e "dd 创建 swapfile 失败"
+                rm -f /swapfile
+                return 1
+            fi
         fi
-    fi
 
-    if [ ! -f /swapfile ] || [ "$(stat -c%s /swapfile)" -lt 10240 ]; then
-        echo -e "swapfile创建失败或文件过小"
-        rm -f /swapfile
-        return 1
-    fi
+        if [ ! -f /swapfile ] || [ "$(stat -c%s /swapfile)" -lt 10240 ]; then
+            echo -e "swapfile 文件异常，尝试其他方式..."
+            continue
+        fi
 
-    chmod 600 /swapfile
-    if ! mkswap /swapfile; then
-        echo -e "mkswap 执行失败"
-        rm -f /swapfile
-        return 1
-    fi
+        chmod 600 /swapfile
+        if ! mkswap /swapfile; then
+            echo -e "mkswap 执行失败"
+            continue
+        fi
 
-    if ! swapon /swapfile; then
-        echo -e "swapon 执行失败"
+        if swapon /swapfile; then
+            swap_ok=true
+            break
+        fi
+        echo -e "swapon 失败（method=$method），尝试其他方式..."
+    done
+
+    if ! $swap_ok; then
+        echo -e "所有方式均失败，无法创建 swap"
         rm -f /swapfile
         return 1
     fi
