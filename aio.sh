@@ -66,11 +66,16 @@ setup_swap() {
     fi
 
     local swap_ok=false
-    for method in fallocate dd; do
+    for method in fallocate dd btrfs; do
         rm -f /swapfile
         if [ "$method" = "fallocate" ]; then
             if ! fallocate -l "${swapsize}M" /swapfile 2>/dev/null; then
                 echo -e "fallocate 不可用，尝试 dd..."
+                continue
+            fi
+        elif [ "$method" = "btrfs" ]; then
+            if ! btrfs filesystem mkswapfile --size "${swapsize}M" /swapfile 2>/dev/null; then
+                echo -e "btrfs 不可用，尝试 dd..."
                 continue
             fi
         else
