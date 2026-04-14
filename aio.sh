@@ -402,16 +402,28 @@ install_xrayr() {
 }
 
 install_xboard_node() {
-    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-    chmod +x /usr/local/bin/yq
+    if ! command -v yq &>/dev/null; then
+        echo "未找到 yq 命令，安装中..."
+        curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        chmod +x /usr/local/bin/yq
+    fi
+    if [[ -d xboard-node ]]; then
+        echo "xboard-node 目录已存在"
+        exit 1
+    fi
+    
     git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
     cd xboard-node
     read -p "请输入面板URL: " PANEL_URL
     read -p "请输入面板Token: " PANEL_TOKEN
     read -p "请输入面板Node ID: " PANEL_NODE_ID
-    yq -i ".panel.url = \"${PANEL_URL}\"" config/config.yml
-    yq -i ".panel.token = \"${PANEL_TOKEN}\"" config/config.yml
-    yq -i ".panel.node_id = \"${PANEL_NODE_ID}\"" config/config.yml
+
+    yq -i "
+    .panel.url = \"${PANEL_URL}\" |
+    .panel.token = \"${PANEL_TOKEN}\" |
+    .panel.node_id = ${PANEL_NODE_ID}
+    " config/config.yml
+
     docker compose up -d
     echo "xboard-node 安装完成，运行日志："
     docker compose logs -f
