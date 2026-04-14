@@ -402,6 +402,11 @@ install_xrayr() {
 }
 
 install_xboard_node() {
+    if [[ -d xboard-node ]]; then
+        echo "xboard-node 目录已存在"
+        exit 1
+    fi
+
     local mem_kb swap_kb total_kb
     mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
     swap_kb=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
@@ -420,9 +425,15 @@ install_xboard_node() {
         curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
         chmod +x /usr/local/bin/yq
     fi
-    if [[ -d xboard-node ]]; then
-        echo "xboard-node 目录已存在"
-        exit 1
+
+    if ! command -v docker &>/dev/null; then
+        echo "未找到 docker 命令，安装中..."
+        install_docker
+    fi
+
+    if ! command git &>/dev/null; then
+        echo "未找到 git 命令，安装中..."
+        apt-get install -y git
     fi
     
     git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
