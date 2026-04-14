@@ -402,6 +402,19 @@ install_xrayr() {
 }
 
 install_xboard_node() {
+    local mem_kb swap_kb total_kb
+    mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    swap_kb=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
+    total_kb=$((mem_kb + swap_kb))
+    if (( total_kb < 1048576 )); then
+        local total_mb=$((total_kb / 1024))
+        echo "当前可用总内存(物理+交换): ${total_mb}MB，不足1GB"
+        echo "建议先通过菜单选项增加交换内存后再安装"
+        read -p "是否仍要继续安装？(y/N): " force_continue
+        force_continue=${force_continue:-n}
+        [[ ! "$force_continue" =~ ^[yY]$ ]] && return 1
+    fi
+
     if ! command -v yq &>/dev/null; then
         echo "未找到 yq 命令，安装中..."
         curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
