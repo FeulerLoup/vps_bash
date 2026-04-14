@@ -394,20 +394,27 @@ uninstall_qcloud_monitor() {
     echo "卸载完成"
 }
 
-install_xrayr_normal() {
+install_xrayr() {
     bash <(curl -Ls "https://raw.githubusercontent.com/XrayR-project/XrayR-release/master/install.sh")
     if [[ -d /etc/XrayR ]]; then
         curl -o /etc/XrayR/rulelist "https://raw.githubusercontent.com/Rakau/blockList/main/blockList"
     fi
 }
 
-install_xrayr_alpine() {
-    curl -o install-xrayr.sh https://raw.githubusercontent.com/sarkrui/alpine-XrayR/main/install-xrayr.sh
-    ash install-xrayr.sh
-    rm -f install-xrayr.sh
-    if [[ -d /etc/XrayR ]]; then
-        curl -o /etc/XrayR/rulelist "https://raw.githubusercontent.com/Rakau/blockList/main/blockList"
-    fi
+install_xboard_node() {
+    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+    chmod +x /usr/local/bin/yq
+    git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
+    cd xboard-node
+    read -p "请输入面板URL: " PANEL_URL
+    read -p "请输入面板Token: " PANEL_TOKEN
+    read -p "请输入面板Node ID: " PANEL_NODE_ID
+    yq -i ".panel.url = \"${PANEL_URL}\"" config/config.yml
+    yq -i ".panel.token = \"${PANEL_TOKEN}\"" config/config.yml
+    yq -i ".panel.node_id = \"${PANEL_NODE_ID}\"" config/config.yml
+    docker compose up -d
+    echo "xboard-node 安装完成，运行日志："
+    docker compose logs -f
 }
 
 setup_clean_journal() {
@@ -595,8 +602,8 @@ echo "9) 开启 BBR"
 echo "10) 安装 Fail2Ban"
 echo "11) 卸载阿里云监控"
 echo "12) 卸载腾讯云监控"
-echo "13) 安装 XrayR (常规)"
-echo "14) 安装 XrayR (Alpine)"
+echo "13) 安装 XrayR"
+echo "14) 安装 xboard-node (docker)"
 echo "15) 设置自动清理系统日志"
 echo "16) 定时跑下行流量"
 echo "=================================="
@@ -614,8 +621,8 @@ case $choice in
     10) install_fail2ban ;;
     11) uninstall_aliyun_monitor ;;
     12) uninstall_qcloud_monitor ;;
-    13) install_xrayr_normal ;;
-    14) install_xrayr_alpine ;;
+    13) install_xrayr ;;
+    14) install_xboard_node ;;
     15) setup_clean_journal ;;
     16) schedule_traffic ;;
     *) echo "无效选项" ;;
