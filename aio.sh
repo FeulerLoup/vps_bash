@@ -401,58 +401,6 @@ install_xrayr() {
     fi
 }
 
-install_xboard_node() {
-    if [[ -d xboard-node ]]; then
-        echo "xboard-node 目录已存在"
-        exit 1
-    fi
-
-    local mem_kb swap_kb total_kb
-    mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    swap_kb=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
-    total_kb=$((mem_kb + swap_kb))
-    if (( total_kb < 1048576 )); then
-        local total_mb=$((total_kb / 1024))
-        echo "当前可用总内存(物理+交换): ${total_mb}MB，不足1GB"
-        echo "建议先通过菜单选项增加交换内存后再安装"
-        read -p "是否仍要继续安装？(y/N): " force_continue
-        force_continue=${force_continue:-n}
-        [[ ! "$force_continue" =~ ^[yY]$ ]] && return 1
-    fi
-
-    if ! command -v yq &>/dev/null; then
-        echo "未找到 yq 命令，安装中..."
-        curl -fsSL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-        chmod +x /usr/local/bin/yq
-    fi
-
-    if ! command -v docker &>/dev/null; then
-        echo "未找到 docker 命令，安装中..."
-        install_docker
-    fi
-
-    if ! command git &>/dev/null; then
-        echo "未找到 git 命令，安装中..."
-        apt-get install -y git
-    fi
-    
-    git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
-    cd xboard-node
-    read -p "请输入面板URL: " PANEL_URL
-    read -p "请输入面板Token: " PANEL_TOKEN
-    read -p "请输入面板Node ID: " PANEL_NODE_ID
-
-    yq -i "
-    .panel.url = \"${PANEL_URL}\" |
-    .panel.token = \"${PANEL_TOKEN}\" |
-    .panel.node_id = ${PANEL_NODE_ID}
-    " config/config.yml
-
-    docker compose up -d
-    echo "xboard-node 安装完成，运行日志："
-    docker compose logs -f
-}
-
 setup_clean_journal() {
     if ! command -v journalctl &>/dev/null; then
         echo "未找到 journalctl 命令，此系统可能未使用 systemd 日志管理"
@@ -639,9 +587,8 @@ echo "10) 安装 Fail2Ban"
 echo "11) 卸载阿里云监控"
 echo "12) 卸载腾讯云监控"
 echo "13) 安装 XrayR"
-echo "14) 安装 xboard-node (docker)"
-echo "15) 设置自动清理系统日志"
-echo "16) 定时跑下行流量"
+echo "14) 设置自动清理系统日志"
+echo "15) 定时跑下行流量"
 echo "=================================="
 read -p "请输入选项数字: " choice
 case $choice in
@@ -658,8 +605,7 @@ case $choice in
     11) uninstall_aliyun_monitor ;;
     12) uninstall_qcloud_monitor ;;
     13) install_xrayr ;;
-    14) install_xboard_node ;;
-    15) setup_clean_journal ;;
-    16) schedule_traffic ;;
+    14) setup_clean_journal ;;
+    15) schedule_traffic ;;
     *) echo "无效选项" ;;
 esac
