@@ -394,11 +394,546 @@ uninstall_qcloud_monitor() {
     echo "卸载完成"
 }
 
-install_xrayr() {
-    bash <(curl -Ls "https://raw.githubusercontent.com/XrayR-project/XrayR-release/master/install.sh")
-    if [[ -d /etc/XrayR ]]; then
-        curl -o /etc/XrayR/rulelist "https://raw.githubusercontent.com/Rakau/blockList/main/blockList"
+install_shadowsocks_rust() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "需要管理员权限"
+        return 1
     fi
+
+    # detect_os
+    local OS=""
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+    elif [ -f /etc/alpine-release ]; then
+        OS="alpine"
+    else
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    fi
+
+    local IS_ALPINE=false
+    case "$OS" in
+        debian|ubuntu)
+            IS_ALPINE=false
+            ;;
+        alpine)
+            IS_ALPINE=true
+            ;;
+        *)
+            echo "仅支持 debian/ubuntu 和 alpine 系统 (当前: $OS)"
+            return 1
+            ;;
+    esac
+
+    # install_deps
+    echo "==> 安装依赖..."
+    if $IS_ALPINE; then
+        apk update >/dev/null
+        apk add --no-cache curl tar xz openssl ca-certificates openrc >/dev/null
+    else
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq curl tar xz-utils openssl ca-certificates >/dev/null
+    fi
+
+    # detect_arch
+    local ARCH SS_ARCH
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64)   SS_ARCH="x86_64-unknown-linux-musl" ;;
+        aarch64|arm64)  SS_ARCH="aarch64-unknown-linux-musl" ;;
+        armv7l|armv7)   SS_ARCH="armv7-unknown-linux-musleabihf" ;;
+        i686|i386)      SS_ARCH="i686-unknown-linux-musl" ;;
+        *)
+            echo "不支持的架构: $ARCH"
+            return 1
+            ;;
+    esac
+
+    # get_latest_version
+    echo "==> 获取最新版本..."
+    local LATEST_VERSION
+    LATEST_VERSION=$(curl -fsSL --max-time 15 https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases/latest \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
+        | head -n1 \
+        | sed -E 's/.*"([^"]+)"$/\1/')
+    if [ -z "$LATEST_VERSION" ]; then
+        echo "获取最新版本失败，请检查网络"
+        return 1
+    fi
+    echo "最新版本: $LATEST_VERSION"
+
+    local DOWNLOAD_URL="https://github.com/shadowsocks/shadowsocks-rust/releases/download/${LATEST_VERSION}/shadowsocks-${LATEST_VERSION}.${SS_ARCH}.tar.xz"
+    echo "==> 下载: $DOWNLOAD_URL"
+
+    local TMPDIR
+    TMPDIR=$(mktemp -d)
+    if ! curl -fL --retry 3 --max-time 300 -o "$TMPDIR/ss.tar.xz" "$DOWNLOAD_URL"; then
+        echo "下载失败"
+        rm -rf "$TMPDIR"
+        return 1
+    fi
+
+    if ! tar -xJf "$TMPDIR/ss.tar.xz" -C "$TMPDIR"; then
+        echo "解压失败"
+        rm -rf "$TMPDIR"
+        return 1
+    fi
+
+    # install_binaries
+    echo "==> 安装二进制文件到 /usr/local/bin ..."
+    local bin
+    for bin in sslocal ssserver ssservice ssurl ssmanager; do
+        if [ -f "$TMPDIR/$bin" ]; then
+            install -m 755 "$TMPDIR/$bin" "/usr/local/bin/$bin"
+        fi
+    done
+    rm -rf "$TMPDIR"
+
+    if [ ! -x /usr/local/bin/ssserver ]; then
+        echo "安装失败: 未找到 ssserver"
+        return 1
+    fi
+
+    # generate_port_and_password
+    local SS_PORT SS_PASSWORD SS_METHOD
+    SS_PORT=$(shuf -i 10000-65000 -n 1 2>/dev/null \
+        || awk -v min=10000 -v max=65000 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+    SS_PASSWORD=$(openssl rand -base64 16 2>/dev/null \
+        || tr -dc 'A-Za-z0-9' </dev/urandom | head -c 22)
+    SS_METHOD="2022-blake3-aes-128-gcm"
+
+    # write_config
+    echo "==> 生成配置文件..."
+    mkdir -p /etc/shadowsocks-rust
+    cat > /etc/shadowsocks-rust/config.json <<EOF
+{
+    "server": "::",
+    "server_port": ${SS_PORT},
+    "password": "${SS_PASSWORD}",
+    "method": "${SS_METHOD}",
+    "mode": "tcp_and_udp",
+    "timeout": 300,
+    "no_delay": true,
+    "fast_open": false,
+    "ipv6_first": false,
+    "nofile": 51200
+}
+EOF
+    chmod 600 /etc/shadowsocks-rust/config.json
+
+    # setup_service
+    if $IS_ALPINE; then
+        echo "==> 创建 OpenRC 服务..."
+        cat > /etc/init.d/shadowsocks-rust <<'EOF'
+#!/sbin/openrc-run
+
+name="shadowsocks-rust"
+description="Shadowsocks-rust Server"
+command="/usr/local/bin/ssserver"
+command_args="-c /etc/shadowsocks-rust/config.json"
+command_background="yes"
+pidfile="/run/shadowsocks-rust.pid"
+output_log="/var/log/shadowsocks-rust.log"
+error_log="/var/log/shadowsocks-rust.log"
+rc_ulimit="-n 51200"
+
+depend() {
+    need net
+    after firewall
+}
+EOF
+        chmod +x /etc/init.d/shadowsocks-rust
+        rc-update add shadowsocks-rust default >/dev/null 2>&1
+        rc-service shadowsocks-rust restart
+        sleep 1
+        rc-service shadowsocks-rust status || true
+    else
+        echo "==> 创建 systemd 服务..."
+        cat > /etc/systemd/system/shadowsocks-rust.service <<EOF
+[Unit]
+Description=Shadowsocks-rust Server
+Documentation=https://github.com/shadowsocks/shadowsocks-rust
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/config.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable shadowsocks-rust >/dev/null 2>&1
+        systemctl restart shadowsocks-rust
+        sleep 1
+        systemctl status shadowsocks-rust --no-pager -l || true
+    fi
+
+    # get_public_ip
+    local PUBLIC_IP
+    PUBLIC_IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
+        || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
+        || curl -fsSL --max-time 5 https://ipinfo.io/ip 2>/dev/null \
+        || echo "YOUR_SERVER_IP")
+
+    # build ss:// URL (SIP002, base64url without padding)
+    local SS_USERINFO SS_USERINFO_B64 SS_URL
+    SS_USERINFO="${SS_METHOD}:${SS_PASSWORD}"
+    SS_USERINFO_B64=$(printf '%s' "$SS_USERINFO" | base64 | tr -d '\n=' | tr '/+' '_-')
+    SS_URL="ss://${SS_USERINFO_B64}@${PUBLIC_IP}:${SS_PORT}#shadowsocks-rust"
+
+    echo ""
+    echo "=========================================="
+    echo "shadowsocks-rust 安装完成"
+    echo "=========================================="
+    echo "版本:       ${LATEST_VERSION}"
+    echo "服务器地址: ${PUBLIC_IP}"
+    echo "服务器端口: ${SS_PORT}"
+    echo "密码:       ${SS_PASSWORD}"
+    echo "加密方式:   ${SS_METHOD}"
+    echo "模式:       tcp_and_udp"
+    echo ""
+    echo "ss:// 链接:"
+    echo "${SS_URL}"
+    echo "=========================================="
+    echo "配置文件: /etc/shadowsocks-rust/config.json"
+    if $IS_ALPINE; then
+        echo "服务管理: rc-service shadowsocks-rust {start|stop|restart|status}"
+        echo "日志文件: /var/log/shadowsocks-rust.log"
+    else
+        echo "服务管理: systemctl {start|stop|restart|status} shadowsocks-rust"
+        echo "查看日志: journalctl -u shadowsocks-rust -f"
+    fi
+    echo "=========================================="
+}
+
+install_vless_enc() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "需要管理员权限"
+        return 1
+    fi
+
+    # detect_os
+    local OS=""
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+    elif [ -f /etc/alpine-release ]; then
+        OS="alpine"
+    else
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    fi
+
+    local IS_ALPINE=false
+    case "$OS" in
+        debian|ubuntu)
+            IS_ALPINE=false
+            ;;
+        alpine)
+            IS_ALPINE=true
+            ;;
+        *)
+            echo "仅支持 debian/ubuntu 和 alpine 系统 (当前: $OS)"
+            return 1
+            ;;
+    esac
+
+    # install_deps
+    echo "==> 安装依赖..."
+    if $IS_ALPINE; then
+        apk update >/dev/null
+        apk add --no-cache curl unzip openssl ca-certificates openrc >/dev/null
+    else
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq curl unzip openssl ca-certificates >/dev/null
+    fi
+
+    # detect_arch
+    local ARCH XRAY_ASSET
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64|amd64)   XRAY_ASSET="Xray-linux-64.zip" ;;
+        aarch64|arm64)  XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;;
+        armv7l|armv7)   XRAY_ASSET="Xray-linux-arm32-v7a.zip" ;;
+        i686|i386)      XRAY_ASSET="Xray-linux-32.zip" ;;
+        *)
+            echo "不支持的架构: $ARCH"
+            return 1
+            ;;
+    esac
+
+    # get_latest_version
+    echo "==> 获取 Xray-core 最新版本..."
+    local LATEST_VERSION
+    LATEST_VERSION=$(curl -fsSL --max-time 15 https://api.github.com/repos/XTLS/Xray-core/releases/latest \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
+        | head -n1 \
+        | sed -E 's/.*"([^"]+)"$/\1/')
+    if [ -z "$LATEST_VERSION" ]; then
+        echo "获取最新版本失败，请检查网络"
+        return 1
+    fi
+    echo "最新版本: $LATEST_VERSION"
+
+    local DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/${XRAY_ASSET}"
+    echo "==> 下载: $DOWNLOAD_URL"
+
+    local TMPDIR
+    TMPDIR=$(mktemp -d)
+    if ! curl -fL --retry 3 --max-time 300 -o "$TMPDIR/xray.zip" "$DOWNLOAD_URL"; then
+        echo "下载失败"
+        rm -rf "$TMPDIR"
+        return 1
+    fi
+
+    if ! unzip -o "$TMPDIR/xray.zip" -d "$TMPDIR/xray" >/dev/null; then
+        echo "解压失败"
+        rm -rf "$TMPDIR"
+        return 1
+    fi
+
+    # install_binary_and_geodata
+    echo "==> 安装 xray 到 /usr/local/bin ..."
+    if [ ! -f "$TMPDIR/xray/xray" ]; then
+        echo "安装失败: 压缩包内未找到 xray 二进制"
+        rm -rf "$TMPDIR"
+        return 1
+    fi
+    install -m 755 "$TMPDIR/xray/xray" /usr/local/bin/xray
+
+    mkdir -p /usr/local/share/xray
+    local dat
+    for dat in geoip.dat geosite.dat; do
+        [ -f "$TMPDIR/xray/$dat" ] && install -m 644 "$TMPDIR/xray/$dat" "/usr/local/share/xray/$dat"
+    done
+    rm -rf "$TMPDIR"
+
+    if [ ! -x /usr/local/bin/xray ]; then
+        echo "安装失败: 未找到 xray"
+        return 1
+    fi
+
+    # generate_credentials
+    echo "==> 生成 UUID 与 VLESS Encryption 密钥..."
+    local UUID
+    UUID=$(/usr/local/bin/xray uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+
+    # 使用 `xray vlessenc` 生成配对的 decryption / encryption
+    # 采用 ML-KEM-768(后量子, Post-Quantum) 认证组；密钥串仅含 [A-Za-z0-9._-]，可直接用于 URL
+    local ENC_OUT PQ_OUT DECRYPTION ENCRYPTION
+    ENC_OUT=$(/usr/local/bin/xray vlessenc 2>/dev/null)
+    # 定位输出中的 "ML-KEM-768" 段落(后量子)；若解析失败则回退到全部输出并取最后一组
+    PQ_OUT=$(printf '%s\n' "$ENC_OUT" | awk '/ML-KEM-768/{flag=1} flag')
+    [ -z "$PQ_OUT" ] && PQ_OUT="$ENC_OUT"
+    ENCRYPTION=$(printf '%s\n' "$PQ_OUT" | grep -oE 'mlkem768x25519plus\.[^"[:space:]]+' | grep '\.0rtt\.' | tail -n1)
+    DECRYPTION=$(printf '%s\n' "$PQ_OUT" | grep -oE 'mlkem768x25519plus\.[^"[:space:]]+' | grep -v '\.0rtt\.' | tail -n1)
+
+    if [ -z "$DECRYPTION" ] || [ -z "$ENCRYPTION" ]; then
+        echo "生成 VLESS Encryption 密钥失败（当前 Xray 版本可能过旧，未提供 vlessenc 命令）"
+        return 1
+    fi
+
+    # generate_port
+    local PORT
+    PORT=$(shuf -i 10000-65000 -n 1 2>/dev/null \
+        || awk -v min=10000 -v max=65000 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
+
+    # write_config
+    echo "==> 生成配置文件..."
+    mkdir -p /usr/local/etc/xray
+    cat > /usr/local/etc/xray/config.json <<EOF
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "inbounds": [
+        {
+            "listen": "::",
+            "port": ${PORT},
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "${UUID}",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "${DECRYPTION}"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "none"
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        }
+    ]
+}
+EOF
+    chmod 600 /usr/local/etc/xray/config.json
+
+    # setup_service
+    if $IS_ALPINE; then
+        echo "==> 创建 OpenRC 服务..."
+        cat > /etc/init.d/xray <<'EOF'
+#!/sbin/openrc-run
+
+name="xray"
+description="Xray Service (VLESS Encryption)"
+command="/usr/local/bin/xray"
+command_args="run -c /usr/local/etc/xray/config.json"
+command_background="yes"
+pidfile="/run/xray.pid"
+output_log="/var/log/xray.log"
+error_log="/var/log/xray.log"
+rc_ulimit="-n 51200"
+
+export XRAY_LOCATION_ASSET=/usr/local/share/xray
+
+depend() {
+    need net
+    after firewall
+}
+EOF
+        chmod +x /etc/init.d/xray
+        rc-update add xray default >/dev/null 2>&1
+        rc-service xray restart
+        sleep 1
+        rc-service xray status || true
+    else
+        echo "==> 创建 systemd 服务..."
+        cat > /etc/systemd/system/xray.service <<EOF
+[Unit]
+Description=Xray Service (VLESS Encryption)
+Documentation=https://github.com/XTLS/Xray-core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
+ExecStart=/usr/local/bin/xray run -c /usr/local/etc/xray/config.json
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable xray >/dev/null 2>&1
+        systemctl restart xray
+        sleep 1
+        systemctl status xray --no-pager -l || true
+    fi
+
+    # get_public_ip
+    local PUBLIC_IP
+    PUBLIC_IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
+        || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
+        || curl -fsSL --max-time 5 https://ipinfo.io/ip 2>/dev/null \
+        || echo "YOUR_SERVER_IP")
+
+    # build vless:// share link (encryption 串仅含 URL 安全字符，无需转义)
+    local VLESS_URL
+    VLESS_URL="vless://${UUID}@${PUBLIC_IP}:${PORT}?encryption=${ENCRYPTION}&flow=xtls-rprx-vision&security=none&type=tcp#vless-enc-pq"
+
+    echo ""
+    echo "=========================================="
+    echo "vless-enc (Xray-core) 安装完成"
+    echo "=========================================="
+    echo "版本:        ${LATEST_VERSION}"
+    echo "服务器地址:  ${PUBLIC_IP}"
+    echo "端口:        ${PORT}"
+    echo "UUID:        ${UUID}"
+    echo "传输:        tcp (RAW)"
+    echo "流控 flow:   xtls-rprx-vision"
+    echo "认证方式:    ML-KEM-768 (后量子 Post-Quantum)"
+    echo "外层安全:    none (加密由 VLESS Encryption 提供，无需 TLS 证书)"
+    echo ""
+    echo "服务端 decryption:"
+    echo "${DECRYPTION}"
+    echo ""
+    echo "客户端 encryption:"
+    echo "${ENCRYPTION}"
+    echo ""
+    echo "vless:// 链接:"
+    echo "${VLESS_URL}"
+    echo "=========================================="
+    echo "配置文件: /usr/local/etc/xray/config.json"
+    if $IS_ALPINE; then
+        echo "服务管理: rc-service xray {start|stop|restart|status}"
+        echo "日志文件: /var/log/xray.log"
+    else
+        echo "服务管理: systemctl {start|stop|restart|status} xray"
+        echo "查看日志: journalctl -u xray -f"
+    fi
+    echo "提示: 客户端两端 flow 均需为 xtls-rprx-vision，请使用支持 VLESS Encryption 的最新客户端(如 v2rayN、sing-box 等最新版)"
+    echo "提示: VLESS Encryption 主要面向 CDN/中转/non-TLS 场景，若需直接抗封锁建议叠加 REALITY"
+    echo "=========================================="
+}
+
+uninstall_vless_enc() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "需要管理员权限"
+        return 1
+    fi
+
+    read -p "确认卸载 vless-enc (Xray-core)？(y/N): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "已取消"
+        return 0
+    fi
+
+    # remove_systemd_service
+    if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/xray.service ]; then
+        echo "==> 停止并移除 systemd 服务..."
+        systemctl stop xray 2>/dev/null
+        systemctl disable xray 2>/dev/null
+        rm -f /etc/systemd/system/xray.service
+        systemctl daemon-reload
+        systemctl reset-failed xray 2>/dev/null || true
+    fi
+
+    # remove_openrc_service
+    if command -v rc-service >/dev/null 2>&1 && [ -f /etc/init.d/xray ]; then
+        echo "==> 停止并移除 OpenRC 服务..."
+        rc-service xray stop 2>/dev/null
+        rc-update del xray default 2>/dev/null
+        rm -f /etc/init.d/xray
+    fi
+
+    # remove_binary_config_data_logs
+    echo "==> 删除二进制/配置/数据/日志..."
+    rm -f /usr/local/bin/xray
+    rm -rf /usr/local/etc/xray
+    rm -rf /usr/local/share/xray
+    rm -f /var/log/xray.log
+
+    echo ""
+    echo "vless-enc (Xray-core) 已卸载完成"
 }
 
 setup_clean_journal() {
@@ -586,9 +1121,10 @@ echo "9) 开启 BBR"
 echo "10) 安装 Fail2Ban"
 echo "11) 卸载阿里云监控"
 echo "12) 卸载腾讯云监控"
-echo "13) 安装 XrayR"
-echo "14) 设置自动清理系统日志"
-echo "15) 定时跑下行流量"
+echo "13) 安装 vless-enc (Xray-core)"
+echo "14) 卸载 vless-enc (Xray-core)"
+echo "15) 设置自动清理系统日志"
+echo "16) 定时跑下行流量"
 echo "=================================="
 read -p "请输入选项数字: " choice
 case $choice in
@@ -604,8 +1140,9 @@ case $choice in
     10) install_fail2ban ;;
     11) uninstall_aliyun_monitor ;;
     12) uninstall_qcloud_monitor ;;
-    13) install_xrayr ;;
-    14) setup_clean_journal ;;
-    15) schedule_traffic ;;
+    13) install_vless_enc ;;
+    14) uninstall_vless_enc ;;
+    15) setup_clean_journal ;;
+    16) schedule_traffic ;;
     *) echo "无效选项" ;;
 esac
