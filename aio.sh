@@ -222,26 +222,19 @@ install_fail2ban() {
     fi
 
     cat <<EOF > "$FAIL2BAN_CONF"
-#DEFAULT-START
 [DEFAULT]
-bantime = 600
+bantime = 3600
 findtime = 300
 maxretry = 5
 banaction = $BAN_ACTION
-action = %(action_mwl)s
-#DEFAULT-END
+action = %(action_)s
 
 [sshd]
-ignoreip = 127.0.0.1/8
 enabled = true
-filter = sshd
+filter = sshd[mode=aggressive]
 port = $SSH_PORT
-maxretry = 5
-findtime = 300
-bantime = 600
-banaction = $BAN_ACTION
-action = %(action_mwl)s
 logpath = $LOG_FILE
+ignoreip = 127.0.0.1/8 ::1
 EOF
 
     # start_service
