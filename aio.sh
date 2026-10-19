@@ -118,7 +118,7 @@ setup_swap() {
 }
 
 nodequality() {
-    bash <(curl -sL https://run.NodeQuality.com) <<< $'f\ny\nl\ny\n'
+    bash <(curl -sL https://run.NodeQuality.com)
 }
 
 install_1panel() {
@@ -223,18 +223,18 @@ install_fail2ban() {
 
     cat <<EOF > "$FAIL2BAN_CONF"
 [DEFAULT]
-bantime = 3600
-findtime = 300
-maxretry = 5
+bantime   = 3600
+findtime  = 300
+maxretry  = 3
 banaction = $BAN_ACTION
-action = %(action_)s
+action    = %(action_)s
 
 [sshd]
-enabled = true
-filter = sshd[mode=aggressive]
-port = $SSH_PORT
-logpath = $LOG_FILE
-ignoreip = 127.0.0.1/8 ::1
+enabled   = true
+filter    = sshd[mode=aggressive]
+port      = $SSH_PORT
+logpath   = $LOG_FILE
+ignoreip  = 127.0.0.1/8 ::1
 EOF
 
     # start_service
@@ -323,6 +323,11 @@ uninstall_aliyun_monitor() {
 }
 
 uninstall_qcloud_monitor() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "需要管理员权限"
+        return 1
+    fi
+
     echo "开始清理腾讯云相关组件..."
 
     # https://www.tencentcloud.com/zh/document/product/248/39810
@@ -363,12 +368,85 @@ uninstall_qcloud_monitor() {
     fi
 
     echo "卸载 tat_agent..."
-    if [ -f /etc/systemd/system/tat_agent.service ]; then
-        systemctl stop tat_agent.service
-        systemctl disable tat_agent.service
-        rm -f /etc/systemd/system/tat_agent.service
-        rm -f /var/run/tat_agent.pid
+    local PID_FILE="/var/run/tat_agent.pid"
+    local TAT_AGENT="tat_agent"
+    local TAT_INSTALL_SERVICE="tat_install"
+
+    # 停止并清理 systemd 服务 (tat_agent.service & tat_install.service)
+    if command -v systemctl >/dev/null 2>&1; then
+        for svc in "${TAT_AGENT}.service" "${TAT_INSTALL_SERVICE}.service"; do
+            if [ -e "/etc/systemd/system/${svc}" ] || systemctl list-unit-files "${svc}" >/dev/null 2>&1; then
+                echo "Stopping and disabling systemd service: ${svc}"
+                systemctl stop "${svc}" 2>/dev/null || true
+                systemctl disable "${svc}" 2>/dev/null || true
+                rm -f "/etc/systemd/system/${svc}"
+                rm -f "/etc/systemd/system/multi-user.target.wants/${svc}"
+                rm -f "/usr/lib/systemd/system/${svc}"
+                rm -f "/lib/systemd/system/${svc}"
+            fi
+        done
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl reset-failed 2>/dev/null || true
     fi
+
+    # 停止并清理 upstart 服务 (tat_agent_service & tat_install)
+    if [ -e /etc/init/tat_agent_service.conf ]; then
+        echo "Stopping and removing upstart service: tat_agent_service"
+        command -v initctl >/dev/null 2>&1 && initctl stop tat_agent_service 2>/dev/null || true
+        rm -f /etc/init/tat_agent_service.conf
+    fi
+
+    if [ -e "/etc/init/${TAT_INSTALL_SERVICE}.conf" ]; then
+        echo "Stopping and removing upstart service: ${TAT_INSTALL_SERVICE}"
+        command -v stop >/dev/null 2>&1 && stop "${TAT_INSTALL_SERVICE}" 2>/dev/null || true
+        command -v initctl >/dev/null 2>&1 && initctl stop "${TAT_INSTALL_SERVICE}" 2>/dev/null || true
+        rm -f "/etc/init/${TAT_INSTALL_SERVICE}.conf"
+    fi
+
+    # 停止并清理 sysvinit 服务 (tat_agent_service & tat_install)
+    for init_svc in "tat_agent_service" "${TAT_INSTALL_SERVICE}"; do
+        if [ -e "/etc/init.d/${init_svc}" ]; then
+            echo "Stopping and removing sysvinit service: ${init_svc}"
+            "/etc/init.d/${init_svc}" stop 2>/dev/null || true
+            if command -v chkconfig >/dev/null 2>&1; then
+                chkconfig "${init_svc}" off 2>/dev/null || true
+                chkconfig --del "${init_svc}" 2>/dev/null || true
+            elif command -v update-rc.d >/dev/null 2>&1; then
+                update-rc.d -f "${init_svc}" remove 2>/dev/null || true
+            fi
+            rm -f "/etc/init.d/${init_svc}"
+        fi
+    done
+
+    # 终止残留进程并清理 PID 文件
+    if [ -f "${PID_FILE}" ]; then
+        local PID
+        PID=$(cat "${PID_FILE}" 2>/dev/null || echo 0)
+        if [ -n "${PID}" ] && [ "${PID}" -gt 0 ] 2>/dev/null; then
+            if ps -p "${PID}" 2>/dev/null | grep -q "${TAT_AGENT}"; then
+                echo "Killing ${TAT_AGENT} process (PID: ${PID})"
+                kill -9 "${PID}" 2>/dev/null || true
+            fi
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    rm -f /run/tat_agent.pid
+
+    # 兜底清理可能未写入 PID 文件的残留进程
+    if command -v pkill >/dev/null 2>&1; then
+        pkill -9 -x "${TAT_AGENT}" 2>/dev/null || true
+        pkill -9 -f "/qcloud/tat_agent/install/init_install.sh" 2>/dev/null || true
+    fi
+
+    # 清理二进制软链接、安装目录、运行日志、自更新缓存及安装包临时目录
+    rm -f "/usr/local/bin/${TAT_AGENT}"
+    rm -f "/opt/bin/${TAT_AGENT}"
+    rm -f "/usr/sbin/${TAT_AGENT}"
+    rm -rf /usr/local/qcloud/tat_agent
+    rm -rf /var/lib/qcloud/tat_agent
+    rm -rf /usr/local/qcloud/tat_agent_install
+    rm -rf /var/lib/qcloud/tat_agent_install
+    rm -f /tmp/tat_agent_install.tar.gz
 
     echo "终止相关进程..."
     process=(sap100 secu-tcs-agent sgagent barad_agent tat_agent agentPlugInD pvdriver)
@@ -381,234 +459,11 @@ uninstall_qcloud_monitor() {
 
     echo "删除相关目录..."
     rm -rf /usr/local/qcloud
+    rm -rf /var/lib/qcloud
     rm -rf /usr/local/sa
     rm -rf /usr/local/agenttools
 
     echo "卸载完成"
-}
-
-install_shadowsocks_rust() {
-    if [[ $EUID -ne 0 ]]; then
-        echo "需要管理员权限"
-        return 1
-    fi
-
-    # detect_os
-    local OS=""
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
-    elif [ -f /etc/alpine-release ]; then
-        OS="alpine"
-    else
-        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    fi
-
-    local IS_ALPINE=false
-    case "$OS" in
-        debian|ubuntu)
-            IS_ALPINE=false
-            ;;
-        alpine)
-            IS_ALPINE=true
-            ;;
-        *)
-            echo "仅支持 debian/ubuntu 和 alpine 系统 (当前: $OS)"
-            return 1
-            ;;
-    esac
-
-    # install_deps
-    echo "==> 安装依赖..."
-    if $IS_ALPINE; then
-        apk update >/dev/null
-        apk add --no-cache curl tar xz openssl ca-certificates openrc >/dev/null
-    else
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -qq
-        apt-get install -y -qq curl tar xz-utils openssl ca-certificates >/dev/null
-    fi
-
-    # detect_arch
-    local ARCH SS_ARCH
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64|amd64)   SS_ARCH="x86_64-unknown-linux-musl" ;;
-        aarch64|arm64)  SS_ARCH="aarch64-unknown-linux-musl" ;;
-        armv7l|armv7)   SS_ARCH="armv7-unknown-linux-musleabihf" ;;
-        i686|i386)      SS_ARCH="i686-unknown-linux-musl" ;;
-        *)
-            echo "不支持的架构: $ARCH"
-            return 1
-            ;;
-    esac
-
-    # get_latest_version
-    echo "==> 获取最新版本..."
-    local LATEST_VERSION
-    LATEST_VERSION=$(curl -fsSL --max-time 15 https://api.github.com/repos/shadowsocks/shadowsocks-rust/releases/latest \
-        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
-        | head -n1 \
-        | sed -E 's/.*"([^"]+)"$/\1/')
-    if [ -z "$LATEST_VERSION" ]; then
-        echo "获取最新版本失败，请检查网络"
-        return 1
-    fi
-    echo "最新版本: $LATEST_VERSION"
-
-    local DOWNLOAD_URL="https://github.com/shadowsocks/shadowsocks-rust/releases/download/${LATEST_VERSION}/shadowsocks-${LATEST_VERSION}.${SS_ARCH}.tar.xz"
-    echo "==> 下载: $DOWNLOAD_URL"
-
-    local TMPDIR
-    TMPDIR=$(mktemp -d)
-    if ! curl -fL --retry 3 --max-time 300 -o "$TMPDIR/ss.tar.xz" "$DOWNLOAD_URL"; then
-        echo "下载失败"
-        rm -rf "$TMPDIR"
-        return 1
-    fi
-
-    if ! tar -xJf "$TMPDIR/ss.tar.xz" -C "$TMPDIR"; then
-        echo "解压失败"
-        rm -rf "$TMPDIR"
-        return 1
-    fi
-
-    # install_binaries
-    echo "==> 安装二进制文件到 /usr/local/bin ..."
-    local bin
-    for bin in sslocal ssserver ssservice ssurl ssmanager; do
-        if [ -f "$TMPDIR/$bin" ]; then
-            install -m 755 "$TMPDIR/$bin" "/usr/local/bin/$bin"
-        fi
-    done
-    rm -rf "$TMPDIR"
-
-    if [ ! -x /usr/local/bin/ssserver ]; then
-        echo "安装失败: 未找到 ssserver"
-        return 1
-    fi
-
-    # generate_port_and_password
-    local SS_PORT SS_PASSWORD SS_METHOD
-    SS_PORT=$(shuf -i 10000-65000 -n 1 2>/dev/null \
-        || awk -v min=10000 -v max=65000 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
-    SS_PASSWORD=$(openssl rand -base64 16 2>/dev/null \
-        || tr -dc 'A-Za-z0-9' </dev/urandom | head -c 22)
-    SS_METHOD="2022-blake3-aes-128-gcm"
-
-    # write_config
-    echo "==> 生成配置文件..."
-    mkdir -p /etc/shadowsocks-rust
-    cat > /etc/shadowsocks-rust/config.json <<EOF
-{
-    "server": "::",
-    "server_port": ${SS_PORT},
-    "password": "${SS_PASSWORD}",
-    "method": "${SS_METHOD}",
-    "mode": "tcp_and_udp",
-    "timeout": 300,
-    "no_delay": true,
-    "fast_open": false,
-    "ipv6_first": false,
-    "nofile": 51200
-}
-EOF
-    chmod 600 /etc/shadowsocks-rust/config.json
-
-    # setup_service
-    if $IS_ALPINE; then
-        echo "==> 创建 OpenRC 服务..."
-        cat > /etc/init.d/shadowsocks-rust <<'EOF'
-#!/sbin/openrc-run
-
-name="shadowsocks-rust"
-description="Shadowsocks-rust Server"
-command="/usr/local/bin/ssserver"
-command_args="-c /etc/shadowsocks-rust/config.json"
-command_background="yes"
-pidfile="/run/shadowsocks-rust.pid"
-output_log="/var/log/shadowsocks-rust.log"
-error_log="/var/log/shadowsocks-rust.log"
-rc_ulimit="-n 51200"
-
-depend() {
-    need net
-    after firewall
-}
-EOF
-        chmod +x /etc/init.d/shadowsocks-rust
-        rc-update add shadowsocks-rust default >/dev/null 2>&1
-        rc-service shadowsocks-rust restart
-        sleep 1
-        rc-service shadowsocks-rust status || true
-    else
-        echo "==> 创建 systemd 服务..."
-        cat > /etc/systemd/system/shadowsocks-rust.service <<EOF
-[Unit]
-Description=Shadowsocks-rust Server
-Documentation=https://github.com/shadowsocks/shadowsocks-rust
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/ssserver -c /etc/shadowsocks-rust/config.json
-Restart=on-failure
-RestartSec=3
-LimitNOFILE=1048576
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload
-        systemctl enable shadowsocks-rust >/dev/null 2>&1
-        systemctl restart shadowsocks-rust
-        sleep 1
-        systemctl status shadowsocks-rust --no-pager -l || true
-    fi
-
-    # get_public_ip
-    local PUBLIC_IP
-    PUBLIC_IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
-        || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
-        || curl -fsSL --max-time 5 https://ipinfo.io/ip 2>/dev/null \
-        || echo "YOUR_SERVER_IP")
-
-    # build ss:// URL (SIP002, base64url without padding)
-    local SS_USERINFO SS_USERINFO_B64 SS_URL
-    SS_USERINFO="${SS_METHOD}:${SS_PASSWORD}"
-    SS_USERINFO_B64=$(printf '%s' "$SS_USERINFO" | base64 | tr -d '\n=' | tr '/+' '_-')
-    SS_URL="ss://${SS_USERINFO_B64}@${PUBLIC_IP}:${SS_PORT}#shadowsocks-rust"
-
-    echo ""
-    echo "=========================================="
-    echo "shadowsocks-rust 安装完成"
-    echo "=========================================="
-    echo "版本:       ${LATEST_VERSION}"
-    echo "服务器地址: ${PUBLIC_IP}"
-    echo "服务器端口: ${SS_PORT}"
-    echo "密码:       ${SS_PASSWORD}"
-    echo "加密方式:   ${SS_METHOD}"
-    echo "模式:       tcp_and_udp"
-    echo ""
-    echo "ss:// 链接:"
-    echo "${SS_URL}"
-    echo "=========================================="
-    echo "配置文件: /etc/shadowsocks-rust/config.json"
-    if $IS_ALPINE; then
-        echo "服务管理: rc-service shadowsocks-rust {start|stop|restart|status}"
-        echo "日志文件: /var/log/shadowsocks-rust.log"
-    else
-        echo "服务管理: systemctl {start|stop|restart|status} shadowsocks-rust"
-        echo "查看日志: journalctl -u shadowsocks-rust -f"
-    fi
-    echo "=========================================="
 }
 
 install_vless_enc() {
@@ -958,146 +813,8 @@ setup_clean_journal() {
     fi
 }
 
-schedule_traffic() {
-    local SCRIPT_NAME="night_download"
-    local SCRIPT_DIR="/opt/traffic"
-    local SCRIPT_PATH="/opt/traffic/${SCRIPT_NAME}.sh"
-    local LOG_FILE="/var/log/${SCRIPT_NAME}.log"
-
-    mkdir -p "$SCRIPT_DIR"
-
-cat > "$SCRIPT_PATH" << EOF
-#!/bin/bash
-
-LOG_FILE="$LOG_FILE"
-EOF
-
-cat << 'SCRIPT_EOF' >> "$SCRIPT_PATH"
-LIMIT_RATE="5m"
-
-URLS=(
-  "https://sin-speed.hetzner.com/100MB.bin"
-  "https://ash-speed.hetzner.com/100MB.bin"
-  "https://fsn1-speed.hetzner.com/100MB.bin"
-  "https://nbg1-speed.hetzner.com/100MB.bin"
-  "https://hel1-speed.hetzner.com/100MB.bin"
-  "https://hil-speed.hetzner.com/100MB.bin"
-)
-
-touch "$LOG_FILE"
-
-get_pid() {
-    pgrep -f "$0 run" | head -n1
-}
-
-download_one() {
-    URL=${URLS[$RANDOM % ${#URLS[@]}]}
-    echo "[$(date)] start downloading $URL" >> "$LOG_FILE"
-    wget \
-        --limit-rate="$LIMIT_RATE" \
-        --timeout=15 \
-        --tries=3 \
-        -O /dev/null \
-        "$URL" >/dev/null 2>&1
-    echo "[$(date)] finish download $URL" >> "$LOG_FILE"
-}
-
-run() {
-    trap 'exit 0' SIGTERM SIGINT
-    echo "[$(date)] continuous download running, pid=$$" >> "$LOG_FILE"
-
-    while true; do
-        download_one
-        sleep $((RANDOM % 8 + 3))
-    done
-}
-
-run_once() {
-    trap 'exit 0' SIGTERM SIGINT
-    echo "[$(date)] single download running, pid=$$" >> "$LOG_FILE"
-    download_one
-    echo "[$(date)] single download finished" >> "$LOG_FILE"
-}
-
-start() {
-    stop
-    setsid "$0" run >/dev/null 2>&1 &
-}
-
-once() {
-    stop
-    setsid "$0" run_once >/dev/null 2>&1 &
-}
-
-stop() {
-    PID=$(get_pid)
-    if [ -n "$PID" ]; then
-        PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')
-        echo "[$(date)] stopping download pgid=$PGID" >> "$LOG_FILE"
-        kill -TERM -"$PGID" 2>/dev/null
-    fi
-}
-
-status() {
-    if [ -n "$(get_pid)" ]; then
-        echo "running"
-    else
-        echo "stopped"
-    fi
-}
-
-case "$1" in
-    start)    start ;;
-    once)     once ;;
-    stop)     stop ;;
-    status)   status ;;
-    run)      run ;;
-    run_once) run_once ;;
-    *)
-        echo "usage: $0 {start|once|stop|status}"
-        echo "  start  - continuous download"
-        echo "  once   - single download"
-        echo "  stop   - stop any running download"
-        echo "  status - check running status"
-        exit 1
-        ;;
-esac
-SCRIPT_EOF
-
-    chmod +x "$SCRIPT_PATH"
-
-    echo ""
-    echo "Select cron mode:"
-    echo "  1) Hourly once   - execute 'once' every hour"
-    echo "  2) Nightly range - start at 03:00, stop at 06:00"
-    read -r -p "Enter choice [1/2]: " CRON_MODE
-
-    crontab -l 2>/dev/null | grep -vF "${SCRIPT_NAME}.sh" | crontab -
-
-    case "$CRON_MODE" in
-        1)
-            (
-            crontab -l 2>/dev/null
-            echo "0 * * * * ${SCRIPT_PATH} once"
-            ) | crontab -
-            echo "[OK] Cron: hourly once"
-            ;;
-        2)
-            (
-            crontab -l 2>/dev/null
-            echo "0 3 * * * ${SCRIPT_PATH} start"
-            echo "0 6 * * * ${SCRIPT_PATH} stop"
-            ) | crontab -
-            echo "[OK] Cron: nightly 3:00-6:00"
-            ;;
-        *)
-            echo "[WARN] Invalid choice, no cron installed"
-            ;;
-    esac
-
-    echo "[OK] Installed successfully"
-    echo "[OK] Script: $SCRIPT_PATH"
-    echo "[OK] Log file: $LOG_FILE"
+tcpquality() {
+    bash <(curl -fsSL https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh)
 }
 
 echo ""
@@ -1117,7 +834,7 @@ echo "12) 卸载腾讯云监控"
 echo "13) 安装 vless-enc (Xray-core)"
 echo "14) 卸载 vless-enc (Xray-core)"
 echo "15) 设置自动清理系统日志"
-echo "16) 定时跑下行流量"
+echo "16) TcpQuality"
 echo "=================================="
 read -p "请输入选项数字: " choice
 case $choice in
@@ -1136,6 +853,6 @@ case $choice in
     13) install_vless_enc ;;
     14) uninstall_vless_enc ;;
     15) setup_clean_journal ;;
-    16) schedule_traffic ;;
+    16) tcpquality ;;
     *) echo "无效选项" ;;
 esac
