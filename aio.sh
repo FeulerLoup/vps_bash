@@ -18,14 +18,14 @@ reinstall_warning() {
     echo ""
 }
 
-reinstall_debian12_leitbogioro() {
+reinstall_debian13_leitbogioro() {
     reinstall_warning
-    bash <(curl -sSL "https://raw.githubusercontent.com/leitbogioro/Tools/master/Linux_reinstall/InstallNET.sh") -debian 12 -pwd "$reinstall_password"
+    bash <(curl -sSL "https://raw.githubusercontent.com/leitbogioro/Tools/master/Linux_reinstall/InstallNET.sh") -debian 13 -pwd "$reinstall_password"
 }
 
-reinstall_debian12_bin456789() {
+reinstall_debian13_bin456789() {
     reinstall_warning
-    bash <(curl -sSL "https://cnb.cool/bin456789/reinstall/-/git/raw/main/reinstall.sh") debian 12 --password "$reinstall_password"
+    bash <(curl -sSL "https://cnb.cool/bin456789/reinstall/-/git/raw/main/reinstall.sh") debian 13 --password "$reinstall_password"
 }
 
 reinstall_alpine_leitbogioro() {
@@ -121,6 +121,10 @@ nodequality() {
     bash <(curl -sL https://run.NodeQuality.com)
 }
 
+tcpquality() {
+    bash <(curl -fsSL https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh)
+}
+
 install_1panel() {
     bash -c "$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)"
 }
@@ -138,11 +142,39 @@ enable_bbr() {
 }
 
 install_fail2ban() {
-    read -p "请输入要保护的 SSH 端口 (默认 22): " SSH_PORT
-    SSH_PORT=${SSH_PORT:-22}
+    if [[ $EUID -ne 0 ]]; then
+        echo "需要管理员权限"
+        return 1
+    fi
+
+    # 自动识别当前 SSH 端口
+    local DETECTED_PORT=""
+    local PORT_CFG PORT_SOCK PORT_CONN PORT_LISTEN
+    PORT_CFG=$(grep -ihE '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config.d/*.conf /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -n1)
+    PORT_SOCK=$(grep -ihE '^[[:space:]]*ListenStream[[:space:]]*=[[:space:]]*.*[0-9]+[[:space:]]*$' /etc/systemd/system/ssh.socket.d/*.conf /etc/systemd/system/sshd.socket.d/*.conf 2>/dev/null | grep -oE '[0-9]+[[:space:]]*$' | tr -d '[:space:]' | tail -n1)
+    [ -n "$SSH_CONNECTION" ] && PORT_CONN=$(awk '{print $4}' <<< "$SSH_CONNECTION")
+    if command -v ss >/dev/null 2>&1; then
+        PORT_LISTEN=$(ss -tlnp 2>/dev/null | awk '/sshd|dropbear/{if (match($4, /:[0-9]+$/)) {print substr($4, RSTART+1); exit}}')
+    elif command -v netstat >/dev/null 2>&1; then
+        PORT_LISTEN=$(netstat -tlnp 2>/dev/null | awk '/sshd|dropbear/{if (match($4, /:[0-9]+$/)) {print substr($4, RSTART+1); exit}}')
+    fi
+
+    for p in "$PORT_CFG" "$PORT_SOCK" "$PORT_CONN" "$PORT_LISTEN"; do
+        if [[ "$p" =~ ^[0-9]+$ && "$p" -ge 1 && "$p" -le 65535 ]]; then
+            [ -z "$DETECTED_PORT" ] && DETECTED_PORT="$p"
+            if [ "$p" -ne 22 ]; then
+                DETECTED_PORT="$p"
+                break
+            fi
+        fi
+    done
+    [ -z "$DETECTED_PORT" ] && DETECTED_PORT=22
+
+    read -p "请输入要保护的 SSH 端口 (默认 $DETECTED_PORT): " SSH_PORT
+    SSH_PORT=${SSH_PORT:-$DETECTED_PORT}
     if ! [[ "$SSH_PORT" =~ ^[0-9]+$ && "$SSH_PORT" -ge 1 && "$SSH_PORT" -le 65535 ]]; then
-        echo "端口无效，使用默认 22"
-        SSH_PORT=22
+        echo "端口无效，使用默认 $DETECTED_PORT"
+        SSH_PORT=$DETECTED_PORT
     fi
 
     # detect_os
@@ -164,7 +196,6 @@ install_fail2ban() {
         VERSION=$(uname -r)
     fi
 
-
     # install_fail2ban
     echo -e "Detected system: $OS $VERSION"
     case "$OS" in
@@ -176,26 +207,30 @@ install_fail2ban() {
             else
                 echo -e "rsyslog is already installed."
             fi
+            if ! command -v iptables >/dev/null 2>&1 && ! command -v nft >/dev/null 2>&1; then
+                apt-get install -y iptables
+            fi
             apt-get install -y fail2ban
+            systemctl enable --now rsyslog 2>/dev/null || true
             ;;
-        centos|rhel|fedora)
-            if [ "$OS" = "rhel" ] && [ "${VERSION%%.*}" -ge 8 ]; then
-                dnf install -y epel-release
+        centos|rhel|fedora|rocky|almalinux|ol)
+            if command -v dnf >/dev/null 2>&1; then
+                [ "$OS" != "fedora" ] && dnf install -y epel-release
                 dnf install -y fail2ban
             else
-                yum install -y epel-release
+                [ "$OS" != "fedora" ] && yum install -y epel-release
                 yum install -y fail2ban
             fi
             ;;
         alpine)
-            apk add --no-cache fail2ban
+            apk add --no-cache fail2ban iptables
             ;;
         arch)
             pacman -Sy --noconfirm fail2ban
             ;;
         *)
-            echo -e "Unsupported system"
-            exit 1
+            echo -e "Unsupported system: $OS"
+            return 1
             ;;
     esac
 
@@ -208,14 +243,19 @@ install_fail2ban() {
 
     if systemctl is-active --quiet firewalld 2>/dev/null; then
         BAN_ACTION="firewallcmd-ipset"
-    elif systemctl is-active --quiet ufw 2>/dev/null || service ufw status 2>/dev/null | grep -q "active"; then
+    elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
         BAN_ACTION="ufw"
+    elif ! command -v iptables >/dev/null 2>&1 && command -v nft >/dev/null 2>&1; then
+        BAN_ACTION="nftables-allports"
     else
         BAN_ACTION="iptables-allports"
     fi
 
     if [ -f /var/log/secure ]; then
         LOG_FILE="/var/log/secure"
+    elif [ "$OS" = "alpine" ] && [ ! -f /var/log/auth.log ]; then
+        LOG_FILE="/var/log/messages"
+        [ -f "$LOG_FILE" ] || touch "$LOG_FILE"
     else
         LOG_FILE="/var/log/auth.log"
         [ -f "$LOG_FILE" ] || touch "$LOG_FILE"
@@ -241,13 +281,13 @@ EOF
     echo -e "Start Fail2ban..."
     
     case "$OS" in
-        ubuntu|debian|centos|rhel|fedora|arch)
+        ubuntu|debian|centos|rhel|fedora|rocky|almalinux|ol|arch)
             systemctl enable fail2ban
             systemctl restart fail2ban
             ;;
         alpine)
-            rc-update add fail2ban
-            rc-service fail2ban start
+            rc-update add fail2ban default 2>/dev/null || rc-update add fail2ban
+            rc-service fail2ban restart
             ;;
         *)
             echo -e "The service cannot be started automatically. Please start manually!"
@@ -255,12 +295,12 @@ EOF
     esac
 
     if command -v systemctl &> /dev/null; then
-        systemctl status fail2ban || true
+        systemctl status fail2ban --no-pager -l || true
     else
         rc-service fail2ban status || true
     fi
 
-    echo -e "Fail2ban is installed and started"
+    echo -e "Fail2ban is installed and started (SSH port: $SSH_PORT, banaction: $BAN_ACTION, logpath: $LOG_FILE)"
 }
 
 uninstall_aliyun_monitor() {
@@ -466,393 +506,36 @@ uninstall_qcloud_monitor() {
     echo "卸载完成"
 }
 
-install_vless_enc() {
-    if [[ $EUID -ne 0 ]]; then
-        echo "需要管理员权限"
-        return 1
-    fi
-
-    # detect_os
-    local OS=""
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
-    elif [ -f /etc/alpine-release ]; then
-        OS="alpine"
-    else
-        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    fi
-
-    local IS_ALPINE=false
-    case "$OS" in
-        debian|ubuntu)
-            IS_ALPINE=false
-            ;;
-        alpine)
-            IS_ALPINE=true
-            ;;
-        *)
-            echo "仅支持 debian/ubuntu 和 alpine 系统 (当前: $OS)"
-            return 1
-            ;;
-    esac
-
-    # install_deps
-    echo "==> 安装依赖..."
-    if $IS_ALPINE; then
-        apk update >/dev/null
-        apk add --no-cache curl unzip openssl ca-certificates openrc >/dev/null
-    else
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -qq
-        apt-get install -y -qq curl unzip openssl ca-certificates >/dev/null
-    fi
-
-    # detect_arch
-    local ARCH XRAY_ASSET
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64|amd64)   XRAY_ASSET="Xray-linux-64.zip" ;;
-        aarch64|arm64)  XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;;
-        armv7l|armv7)   XRAY_ASSET="Xray-linux-arm32-v7a.zip" ;;
-        i686|i386)      XRAY_ASSET="Xray-linux-32.zip" ;;
-        *)
-            echo "不支持的架构: $ARCH"
-            return 1
-            ;;
-    esac
-
-    # get_latest_version
-    echo "==> 获取 Xray-core 最新版本..."
-    local LATEST_VERSION
-    LATEST_VERSION=$(curl -fsSL --max-time 15 https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
-        | head -n1 \
-        | sed -E 's/.*"([^"]+)"$/\1/')
-    if [ -z "$LATEST_VERSION" ]; then
-        echo "获取最新版本失败，请检查网络"
-        return 1
-    fi
-    echo "最新版本: $LATEST_VERSION"
-
-    local DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/${XRAY_ASSET}"
-    echo "==> 下载: $DOWNLOAD_URL"
-
-    local TMPDIR
-    TMPDIR=$(mktemp -d)
-    if ! curl -fL --retry 3 --max-time 300 -o "$TMPDIR/xray.zip" "$DOWNLOAD_URL"; then
-        echo "下载失败"
-        rm -rf "$TMPDIR"
-        return 1
-    fi
-
-    if ! unzip -o "$TMPDIR/xray.zip" -d "$TMPDIR/xray" >/dev/null; then
-        echo "解压失败"
-        rm -rf "$TMPDIR"
-        return 1
-    fi
-
-    # install_binary_and_geodata
-    echo "==> 安装 xray 到 /usr/local/bin ..."
-    if [ ! -f "$TMPDIR/xray/xray" ]; then
-        echo "安装失败: 压缩包内未找到 xray 二进制"
-        rm -rf "$TMPDIR"
-        return 1
-    fi
-    install -m 755 "$TMPDIR/xray/xray" /usr/local/bin/xray
-
-    mkdir -p /usr/local/share/xray
-    local dat
-    for dat in geoip.dat geosite.dat; do
-        [ -f "$TMPDIR/xray/$dat" ] && install -m 644 "$TMPDIR/xray/$dat" "/usr/local/share/xray/$dat"
-    done
-    rm -rf "$TMPDIR"
-
-    if [ ! -x /usr/local/bin/xray ]; then
-        echo "安装失败: 未找到 xray"
-        return 1
-    fi
-
-    # generate_credentials
-    echo "==> 生成 UUID 与 VLESS Encryption 密钥..."
-    local UUID
-    UUID=$(/usr/local/bin/xray uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-
-    # 使用 `xray vlessenc` 生成配对的 decryption / encryption
-    # 采用 ML-KEM-768(后量子, Post-Quantum) 认证组；密钥串仅含 [A-Za-z0-9._-]，可直接用于 URL
-    local ENC_OUT PQ_OUT DECRYPTION ENCRYPTION
-    ENC_OUT=$(/usr/local/bin/xray vlessenc 2>/dev/null)
-    # 定位输出中的 "ML-KEM-768" 段落(后量子)；若解析失败则回退到全部输出并取最后一组
-    PQ_OUT=$(printf '%s\n' "$ENC_OUT" | awk '/ML-KEM-768/{flag=1} flag')
-    [ -z "$PQ_OUT" ] && PQ_OUT="$ENC_OUT"
-    ENCRYPTION=$(printf '%s\n' "$PQ_OUT" | grep -oE 'mlkem768x25519plus\.[^"[:space:]]+' | grep '\.0rtt\.' | tail -n1)
-    DECRYPTION=$(printf '%s\n' "$PQ_OUT" | grep -oE 'mlkem768x25519plus\.[^"[:space:]]+' | grep -v '\.0rtt\.' | tail -n1)
-
-    if [ -z "$DECRYPTION" ] || [ -z "$ENCRYPTION" ]; then
-        echo "生成 VLESS Encryption 密钥失败（当前 Xray 版本可能过旧，未提供 vlessenc 命令）"
-        return 1
-    fi
-
-    # generate_port
-    local PORT
-    PORT=$(shuf -i 10000-65000 -n 1 2>/dev/null \
-        || awk -v min=10000 -v max=65000 'BEGIN{srand(); print int(min+rand()*(max-min+1))}')
-
-    # write_config
-    echo "==> 生成配置文件..."
-    mkdir -p /usr/local/etc/xray
-    cat > /usr/local/etc/xray/config.json <<EOF
-{
-    "log": {
-        "loglevel": "warning"
-    },
-    "inbounds": [
-        {
-            "listen": "::",
-            "port": ${PORT},
-            "protocol": "vless",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "${UUID}",
-                        "flow": "xtls-rprx-vision"
-                    }
-                ],
-                "decryption": "${DECRYPTION}"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "security": "none"
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "tag": "direct"
-        }
-    ]
-}
-EOF
-    chmod 600 /usr/local/etc/xray/config.json
-
-    # setup_service
-    if $IS_ALPINE; then
-        echo "==> 创建 OpenRC 服务..."
-        cat > /etc/init.d/xray <<'EOF'
-#!/sbin/openrc-run
-
-name="xray"
-description="Xray Service (VLESS Encryption)"
-command="/usr/local/bin/xray"
-command_args="run -c /usr/local/etc/xray/config.json"
-command_background="yes"
-pidfile="/run/xray.pid"
-output_log="/var/log/xray.log"
-error_log="/var/log/xray.log"
-rc_ulimit="-n 51200"
-
-export XRAY_LOCATION_ASSET=/usr/local/share/xray
-
-depend() {
-    need net
-    after firewall
-}
-EOF
-        chmod +x /etc/init.d/xray
-        rc-update add xray default >/dev/null 2>&1
-        rc-service xray restart
-        sleep 1
-        rc-service xray status || true
-    else
-        echo "==> 创建 systemd 服务..."
-        cat > /etc/systemd/system/xray.service <<EOF
-[Unit]
-Description=Xray Service (VLESS Encryption)
-Documentation=https://github.com/XTLS/Xray-core
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
-ExecStart=/usr/local/bin/xray run -c /usr/local/etc/xray/config.json
-Restart=on-failure
-RestartSec=3
-LimitNOFILE=1048576
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload
-        systemctl enable xray >/dev/null 2>&1
-        systemctl restart xray
-        sleep 1
-        systemctl status xray --no-pager -l || true
-    fi
-
-    # get_public_ip
-    local PUBLIC_IP
-    PUBLIC_IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
-        || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
-        || curl -fsSL --max-time 5 https://ipinfo.io/ip 2>/dev/null \
-        || echo "YOUR_SERVER_IP")
-
-    # build vless:// share link (encryption 串仅含 URL 安全字符，无需转义)
-    local VLESS_URL
-    VLESS_URL="vless://${UUID}@${PUBLIC_IP}:${PORT}?encryption=${ENCRYPTION}&flow=xtls-rprx-vision&security=none&type=tcp#vless-enc-pq"
-
-    echo ""
-    echo "=========================================="
-    echo "vless-enc (Xray-core) 安装完成"
-    echo "=========================================="
-    echo "版本:        ${LATEST_VERSION}"
-    echo "服务器地址:  ${PUBLIC_IP}"
-    echo "端口:        ${PORT}"
-    echo "UUID:        ${UUID}"
-    echo "传输:        tcp (RAW)"
-    echo "流控 flow:   xtls-rprx-vision"
-    echo "认证方式:    ML-KEM-768 (后量子 Post-Quantum)"
-    echo "外层安全:    none (加密由 VLESS Encryption 提供，无需 TLS 证书)"
-    echo ""
-    echo "服务端 decryption:"
-    echo "${DECRYPTION}"
-    echo ""
-    echo "客户端 encryption:"
-    echo "${ENCRYPTION}"
-    echo ""
-    echo "vless:// 链接:"
-    echo "${VLESS_URL}"
-    echo "=========================================="
-    echo "配置文件: /usr/local/etc/xray/config.json"
-    if $IS_ALPINE; then
-        echo "服务管理: rc-service xray {start|stop|restart|status}"
-        echo "日志文件: /var/log/xray.log"
-    else
-        echo "服务管理: systemctl {start|stop|restart|status} xray"
-        echo "查看日志: journalctl -u xray -f"
-    fi
-    echo "提示: 客户端两端 flow 均需为 xtls-rprx-vision，请使用支持 VLESS Encryption 的最新客户端(如 v2rayN、sing-box 等最新版)"
-    echo "提示: VLESS Encryption 主要面向 CDN/中转/non-TLS 场景，若需直接抗封锁建议叠加 REALITY"
-    echo "=========================================="
-}
-
-uninstall_vless_enc() {
-    if [[ $EUID -ne 0 ]]; then
-        echo "需要管理员权限"
-        return 1
-    fi
-
-    read -p "确认卸载 vless-enc (Xray-core)？(y/N): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo "已取消"
-        return 0
-    fi
-
-    # remove_systemd_service
-    if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/xray.service ]; then
-        echo "==> 停止并移除 systemd 服务..."
-        systemctl stop xray 2>/dev/null
-        systemctl disable xray 2>/dev/null
-        rm -f /etc/systemd/system/xray.service
-        systemctl daemon-reload
-        systemctl reset-failed xray 2>/dev/null || true
-    fi
-
-    # remove_openrc_service
-    if command -v rc-service >/dev/null 2>&1 && [ -f /etc/init.d/xray ]; then
-        echo "==> 停止并移除 OpenRC 服务..."
-        rc-service xray stop 2>/dev/null
-        rc-update del xray default 2>/dev/null
-        rm -f /etc/init.d/xray
-    fi
-
-    # remove_binary_config_data_logs
-    echo "==> 删除二进制/配置/数据/日志..."
-    rm -f /usr/local/bin/xray
-    rm -rf /usr/local/etc/xray
-    rm -rf /usr/local/share/xray
-    rm -f /var/log/xray.log
-
-    echo ""
-    echo "vless-enc (Xray-core) 已卸载完成"
-}
-
-setup_clean_journal() {
-    if ! command -v journalctl &>/dev/null; then
-        echo "未找到 journalctl 命令，此系统可能未使用 systemd 日志管理"
-        echo "此功能仅适用于使用 systemd 的系统"
-        return 1
-    fi
-
-    echo "当前日志占用空间："
-    journalctl --disk-usage
-
-    read -p "是否立即清理7天前的日志？(Y/n): " confirm
-    confirm=${confirm:-y} 
-    if [[ "$confirm" =~ ^[yY]$ ]]; then
-        journalctl --vacuum-time=7d
-        echo "日志清理完成"
-    fi
-
-    read -p "是否添加每周一0点自动清理7天前日志的定时任务？(Y/n): " add_confirm
-    add_confirm=${add_confirm:-y} 
-    if [[ "$add_confirm" =~ ^[yY]$ ]]; then
-        crontab -l 2>/dev/null | grep -v "journalctl.*vacuum" | crontab -
-        (
-        crontab -l 2>/dev/null
-        echo "0 0 * * 1 journalctl --vacuum-time=7d >/dev/null 2>&1"
-        ) | crontab -
-        echo "已添加定时任务"
-    fi
-}
-
-tcpquality() {
-    bash <(curl -fsSL https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh)
-}
-
 echo ""
 echo "========== 功能菜单 =========="
-echo "1) 一键重装 Debian 12 (leitbogioro)"
-echo "2) 一键重装 Debian 12 (bin456789)"
+echo "1) 一键重装 Debian 13 (leitbogioro)"
+echo "2) 一键重装 Debian 13 (bin456789)"
 echo "3) 一键重装 alpine (leitbogioro)"
 echo "4) 一键重装 alpine (bin456789)"
 echo "5) 设置交换内存"
-echo "6) NodeQuality (快速硬件低流量)"
-echo "7) 安装 1Panel"
-echo "8) 安装 Docker"
-echo "9) 开启 BBR"
-echo "10) 安装 Fail2Ban"
-echo "11) 卸载阿里云监控"
-echo "12) 卸载腾讯云监控"
-echo "13) 安装 vless-enc (Xray-core)"
-echo "14) 卸载 vless-enc (Xray-core)"
-echo "15) 设置自动清理系统日志"
-echo "16) TcpQuality"
+echo "6) NodeQuality"
+echo "7) TcpQuality"
+echo "8) 安装 1Panel"
+echo "9) 安装 Docker"
+echo "10) 开启 BBR"
+echo "11) 安装 Fail2Ban"
+echo "12) 卸载阿里云监控"
+echo "13) 卸载腾讯云监控"
 echo "=================================="
 read -p "请输入选项数字: " choice
 case $choice in
-    1) reinstall_debian12_leitbogioro ;;
-    2) reinstall_debian12_bin456789 ;;
+    1) reinstall_debian13_leitbogioro ;;
+    2) reinstall_debian13_bin456789 ;;
     3) reinstall_alpine_leitbogioro ;;
     4) reinstall_alpine_bin456789 ;;
     5) setup_swap ;;
     6) nodequality ;;
-    7) install_1panel ;;
-    8) install_docker ;;
-    9) enable_bbr ;;
-    10) install_fail2ban ;;
-    11) uninstall_aliyun_monitor ;;
-    12) uninstall_qcloud_monitor ;;
-    13) install_vless_enc ;;
-    14) uninstall_vless_enc ;;
-    15) setup_clean_journal ;;
-    16) tcpquality ;;
+    7) tcpquality ;;
+    8) install_1panel ;;
+    9) install_docker ;;
+    10) enable_bbr ;;
+    11) install_fail2ban ;;
+    12) uninstall_aliyun_monitor ;;
+    13) uninstall_qcloud_monitor ;;
     *) echo "无效选项" ;;
 esac
